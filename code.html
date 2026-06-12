@@ -1,1 +1,2002 @@
+Project 4
+The goal of this project is to help you build a practical understanding of diffusion models, from the forward noising process to iterative denoising and sampling
 
+Part 0: Setup
+Using DeepFloyd
+We are going to use the DeepFloyd IF diffusion model. DeepFloyd is a two stage model trained by Stability AI. The first stage produces images of size  
+64
+×
+64
+  and the second stage takes the outputs of the first stage and generates images of size  
+256
+×
+256
+ . We provide upsampling code at the very end of the notebook, though this is not required in your submission.
+
+Before using DeepFloyd, you must accept its usage conditions. To do so:
+
+Make a Hugging Face account and log in.
+Accept the license on the model card of DeepFloyd/IF-I-XL-v1.0. Accepting the license on the stage I model card will auto accept for the other IF models.
+Log in locally by entering your Hugging Face Hub access token below. You should be able to find and create tokens here.
+from huggingface_hub import login
+
+token = "hf_REDACTED_TOKEN"
+login(token=token)
+Install Dependencies
+Run the below to install dependencies.
+
+! pip install -q \
+  diffusers \
+  transformers \
+  safetensors \
+  sentencepiece \
+  accelerate \
+  bitsandbytes \
+  einops \
+  mediapy \
+  accelerate
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 59.4/59.4 MB 10.6 MB/s eta 0:00:00
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.6/1.6 MB 25.9 MB/s eta 0:00:00
+Import Dependencies
+The cell below imports useful packages we will need, and setup the device that we're using.
+
+from PIL import Image
+import mediapy as media
+from pprint import pprint
+from tqdm import tqdm
+
+import torch
+import torchvision.transforms.functional as TF
+import torchvision.transforms as transforms
+from diffusers import DiffusionPipeline
+from transformers import T5EncoderModel
+
+# For downloading web images
+import requests
+from io import BytesIO
+
+device = 'cuda'
+Loading the models
+We will need to download and create the two DeepFloyd stages. These models are quite large, so this cell may take a minute or two to run.
+
+# Load DeepFloyd IF stage I
+stage_1 = DiffusionPipeline.from_pretrained(
+    "DeepFloyd/IF-I-L-v1.0",
+    text_encoder=None,
+    variant="fp16",
+    torch_dtype=torch.float16,
+)
+stage_1.to(device)
+
+# Load DeepFloyd IF stage II
+stage_2 = DiffusionPipeline.from_pretrained(
+                "DeepFloyd/IF-II-L-v1.0",
+                text_encoder=None,
+                variant="fp16",
+                torch_dtype=torch.float16,
+              )
+stage_2.to(device)
+/usr/local/lib/python3.12/dist-packages/huggingface_hub/utils/_auth.py:94: UserWarning: 
+The secret `HF_TOKEN` does not exist in your Colab secrets.
+To authenticate with the Hugging Face Hub, create a token in your settings tab (https://huggingface.co/settings/tokens), set it as secret in your Google Colab and restart your session.
+You will be able to reuse this secret in all of your notebooks.
+Please note that authentication is recommended but still optional to access public models or datasets.
+  warnings.warn(
+model_index.json:   0%|          | 0.00/604 [00:00<?, ?B/s]
+A mixture of fp16 and non-fp16 filenames will be loaded.
+Loaded fp16 filenames:
+[text_encoder/model.fp16-00002-of-00002.safetensors, text_encoder/model.safetensors.index.fp16.json, unet/diffusion_pytorch_model.fp16.safetensors, safety_checker/model.fp16.safetensors, text_encoder/model.fp16-00001-of-00002.safetensors, text_encoder/pytorch_model.bin.index.fp16.json]
+Loaded non-fp16 filenames:
+[watermarker/diffusion_pytorch_model.safetensors
+If this behavior is not expected, please check your folder structure.
+Fetching 12 files:   0%|          | 0/12 [00:00<?, ?it/s]
+config.json:   0%|          | 0.00/4.57k [00:00<?, ?B/s]
+config.json:   0%|          | 0.00/1.63k [00:00<?, ?B/s]
+special_tokens_map.json:   0%|          | 0.00/2.20k [00:00<?, ?B/s]
+tokenizer/spiece.model:   0%|          | 0.00/792k [00:00<?, ?B/s]
+safety_checker/model.fp16.safetensors:   0%|          | 0.00/608M [00:00<?, ?B/s]
+tokenizer_config.json:   0%|          | 0.00/2.54k [00:00<?, ?B/s]
+preprocessor_config.json:   0%|          | 0.00/518 [00:00<?, ?B/s]
+scheduler_config.json:   0%|          | 0.00/454 [00:00<?, ?B/s]
+unet/diffusion_pytorch_model.fp16.safete(…):   0%|          | 0.00/1.87G [00:00<?, ?B/s]
+watermarker/diffusion_pytorch_model.safe(…):   0%|          | 0.00/15.5k [00:00<?, ?B/s]
+config.json:   0%|          | 0.00/74.0 [00:00<?, ?B/s]
+Loading pipeline components...:   0%|          | 0/6 [00:00<?, ?it/s]
+`torch_dtype` is deprecated! Use `dtype` instead!
+You are using the default legacy behaviour of the <class 'transformers.models.t5.tokenization_t5.T5Tokenizer'>. This is expected, and simply means that the `legacy` (previous) behavior will be used so nothing changes for you. If you want to use the new behaviour, set `legacy=False`. This should only be set if you understand what it means, and thoroughly read the reason why this was added as explained in https://github.com/huggingface/transformers/pull/24565
+model_index.json:   0%|          | 0.00/692 [00:00<?, ?B/s]
+A mixture of fp16 and non-fp16 filenames will be loaded.
+Loaded fp16 filenames:
+[text_encoder/model.fp16-00002-of-00002.safetensors, text_encoder/model.safetensors.index.fp16.json, unet/diffusion_pytorch_model.fp16.safetensors, safety_checker/model.fp16.safetensors, text_encoder/model.fp16-00001-of-00002.safetensors, text_encoder/pytorch_model.bin.index.fp16.json]
+Loaded non-fp16 filenames:
+[watermarker/diffusion_pytorch_model.safetensors
+If this behavior is not expected, please check your folder structure.
+Fetching 13 files:   0%|          | 0/13 [00:00<?, ?it/s]
+tokenizer/spiece.model:   0%|          | 0.00/792k [00:00<?, ?B/s]
+scheduler_config.json:   0%|          | 0.00/424 [00:00<?, ?B/s]
+preprocessor_config.json:   0%|          | 0.00/518 [00:00<?, ?B/s]
+tokenizer_config.json:   0%|          | 0.00/2.50k [00:00<?, ?B/s]
+special_tokens_map.json:   0%|          | 0.00/2.20k [00:00<?, ?B/s]
+config.json:   0%|          | 0.00/4.92k [00:00<?, ?B/s]
+safety_checker/model.fp16.safetensors:   0%|          | 0.00/608M [00:00<?, ?B/s]
+scheduler_config.json:   0%|          | 0.00/454 [00:00<?, ?B/s]
+unet/diffusion_pytorch_model.fp16.safete(…):   0%|          | 0.00/2.49G [00:00<?, ?B/s]
+config.json:   0%|          | 0.00/1.72k [00:00<?, ?B/s]
+config.json:   0%|          | 0.00/74.0 [00:00<?, ?B/s]
+watermarker/diffusion_pytorch_model.safe(…):   0%|          | 0.00/15.5k [00:00<?, ?B/s]
+Loading pipeline components...:   0%|          | 0/7 [00:00<?, ?it/s]
+IFSuperResolutionPipeline {
+  "_class_name": "IFSuperResolutionPipeline",
+  "_diffusers_version": "0.35.2",
+  "_name_or_path": "DeepFloyd/IF-II-L-v1.0",
+  "feature_extractor": [
+    "transformers",
+    "CLIPImageProcessor"
+  ],
+  "image_noising_scheduler": [
+    "diffusers",
+    "DDPMScheduler"
+  ],
+  "requires_safety_checker": true,
+  "safety_checker": [
+    "deepfloyd_if",
+    "IFSafetyChecker"
+  ],
+  "scheduler": [
+    "diffusers",
+    "DDPMScheduler"
+  ],
+  "text_encoder": [
+    null,
+    null
+  ],
+  "tokenizer": [
+    "transformers",
+    "T5Tokenizer"
+  ],
+  "unet": [
+    "diffusers",
+    "UNet2DConditionModel"
+  ],
+  "watermarker": [
+    "deepfloyd_if",
+    "IFWatermarker"
+  ]
+}
+Disclaimer about Text Embeddings
+DeepFloyd was trained as a text-to-image model, which takes text prompts as input and outputs images that are aligned with the text. Throughout this notebook, you will see that we ask you to generate with the prompt "a high quality photo". We want you to think of this as a "null" prompt that doesn't have any specific meaning, and is simply a way for the model to do unconditional generation. You can view this as using the diffusion model to "force" a noisy image onto the "manifold" of real images.
+
+In the later sections, we will guide this project with a more detailed text prompt.
+
+Downloading Precomputed Text Embeddings
+Because the text encoder is very large, and barely fits on a free tier Colab GPU, we have precomputed a couple of text embeddings for you to try. This should hopefully save some headaches from GPU out of memory errors. At the end of the homework, we provide you code if you want to try your own text prompts. If you'd like, you can pay $10 for Colab Pro and avoid needing to load the two models on different sessions.
+
+!wget https://cal-cs180.github.io/fa24/hw/proj5/prompt_embeds_dict.pth -O prompt_embeds_dict.pth
+
+prompt_embeds_dict = torch.load('prompt_embeds_dict.pth')
+
+pprint(list(prompt_embeds_dict.keys()))
+--2025-12-05 06:47:45--  https://cal-cs180.github.io/fa24/hw/proj5/prompt_embeds_dict.pth
+Resolving cal-cs180.github.io (cal-cs180.github.io)... 185.199.111.153, 185.199.110.153, 185.199.108.153, ...
+Connecting to cal-cs180.github.io (cal-cs180.github.io)|185.199.111.153|:443... connected.
+HTTP request sent, awaiting response... 200 OK
+Length: 8836210 (8.4M) [application/octet-stream]
+Saving to: ‘prompt_embeds_dict.pth’
+
+prompt_embeds_dict. 100%[===================>]   8.43M  --.-KB/s    in 0.06s   
+
+2025-12-05 06:47:45 (143 MB/s) - ‘prompt_embeds_dict.pth’ saved [8836210/8836210]
+
+['an oil painting of a snowy mountain village',
+ 'a photo of the amalfi cost',
+ 'a photo of a man',
+ 'a photo of a hipster barista',
+ 'a photo of a dog',
+ 'an oil painting of people around a campfire',
+ 'an oil painting of an old man',
+ 'a lithograph of waterfalls',
+ 'a lithograph of a skull',
+ 'a man wearing a hat',
+ 'a high quality photo',
+ '',
+ 'a rocket ship',
+ 'a pencil']
+Seed your Work
+To reproduce your code, please use a random seed from this point onward.
+
+def seed_everything(seed):
+  torch.cuda.manual_seed(seed)
+  torch.manual_seed(seed)
+
+YOUR_SEED = 180
+seed_everything(YOUR_SEED)
+Sampling from the Model
+The objects instantiated above, stage_1 and stage_2, already contain code to allow us to sample images using these models. Read the code below carefully (including the comments) and then run the cell to generate some images. Play around with different prompts and num_inference_steps.
+
+Deliverables
+For the 3 text prompts that we provide, display the caption and the output of the model. Briefly reflect on the quality of the outputs and their relationships to the text prompts. Try a different num_inference_steps for at least one of the images, showing before and after. Make sure to try at least 2 different num_inference_steps values.
+Report the random seed you used. You should use the same seed for all subsequent parts.
+# Get prompt embeddings from the precomputed cache.
+# `prompt_embeds` is of shape [N, 77, 4096]
+# 77 comes from the max sequence length that deepfloyd will take
+# and 4096 comes from the embedding dimension of the text encoder
+# `negative_prompt_embeds` is the same shape as `prompt_embeds` and is used
+# for Classifier Free Guidance. You can find out more from:
+#   - https://arxiv.org/abs/2207.12598
+#   - https://sander.ai/2022/05/26/guidance.html
+prompts = [
+    'an oil painting of a snowy mountain village',
+    'a man wearing a hat',
+    "a rocket ship",
+]
+prompt_embeds = torch.cat([
+    prompt_embeds_dict[prompt] for prompt in prompts
+], dim=0)
+negative_prompt_embeds = torch.cat(
+    [prompt_embeds_dict['']] * len(prompts)
+)
+
+# Sample from stage 1
+# Outputs a [N, 3, 64, 64] torch tensor
+# num_inference_steps is an integer between 1 and 1000, indicating how many
+# denoising steps to take: lower is faster, at the cost of reduced quality
+stage_1_output = stage_1(
+    prompt_embeds=prompt_embeds,
+    negative_prompt_embeds=negative_prompt_embeds,
+    num_inference_steps=20,
+    output_type="pt"
+).images
+
+# Sample from stage 2
+# Outputs a [N, 3, 256, 256] torch tensor
+# num_inference_steps is an integer between 1 and 1000, indicating how many
+# denoising steps to take: lower is faster, at the cost of reduced quality
+stage_2_output = stage_2(
+    image=stage_1_output,
+    num_inference_steps=20,
+    prompt_embeds=prompt_embeds,
+    negative_prompt_embeds=negative_prompt_embeds,
+    output_type="pt",
+).images
+
+# Display images
+# We need to permute the dimensions because `media.show_images` expects
+# a tensor of shape [N, H, W, C], but the above stages gives us tensors of
+# shape [N, C, H, W]. We also need to normalize from [-1, 1], which is the
+# output of the above stages, to [0, 1]
+media.show_images(
+    stage_1_output.permute(0, 2, 3, 1).cpu() / 2. + 0.5,
+    titles=prompts)
+media.show_images(
+    stage_2_output.permute(0, 2, 3, 1).cpu() / 2. + 0.5,
+    titles=prompts)
+  0%|          | 0/20 [00:00<?, ?it/s]
+  0%|          | 0/20 [00:00<?, ?it/s]
+an oil painting of a snowy mountain village
+No description has been provided for this image
+a man wearing a hat
+No description has been provided for this image
+a rocket ship
+No description has been provided for this image
+an oil painting of a snowy mountain village
+No description has been provided for this image
+a man wearing a hat
+No description has been provided for this image
+a rocket ship
+No description has been provided for this image
+Part 1: Sampling Loops
+In this part of the problem set, you will write your own "sampling loops" that use the pretrained DeepFloyd denoisers. These should produce high quality images such as the ones generated above.
+
+You will then modify these sampling loops to solve different tasks such as inpainting or producing optical illusions.
+
+Diffusion Models Primer
+ddpm_markov.png
+
+(Image Source)
+
+Starting with a clean image, 
+x
+0
+, we can iteratively add noise to an image, obtaining progressively more and more noisy versions of the image, 
+x
+t
+, until we're left with basically pure noise at timestep 
+t
+=
+T
+. When 
+t
+=
+0
+, we have a clean image, and for larger 
+t
+ more noise is in the image.
+
+A diffusion model tries to reverse this process by denoising the image. By giving a diffusion model a noisy 
+x
+t
+ and the timestep 
+t
+, the model predicts the noise in the image. With the predicted noise, we can either completely remove the noise from the image, to obtain an estimate of 
+x
+0
+, or we can remove just a portion of the noise, obtaining an estimate of 
+x
+t
+−
+1
+, with slightly less noise.
+
+To generate images from the diffusion model (sampling), we start with pure noise at timestep 
+T
+ sampled from a gaussian distribution, which we denote 
+x
+T
+. We can then predict and remove part of the noise, giving us 
+x
+T
+−
+1
+. Repeating this process until we arrive at 
+x
+0
+ gives us a clean image.
+
+For the DeepFloyd models, 
+T
+=
+1000
+.
+
+Setup
+The exact amount of noise added at each step is dictated by noise coefficients, 
+¯
+α
+t
+, which were chosen by the people who trained DeepFloyd. Run the cell below to create alphas_cumprod, which retrieves these coefficients and downloads a test image that we will work with.
+
+# Get scheduler parameters
+alphas_cumprod = stage_1.scheduler.alphas_cumprod
+
+# Get test image
+!wget cal-cs180.github.io/fa24/hw/proj5/assets/campanile.jpg -O campanile.jpg
+test_im = Image.open('campanile.jpg')
+
+# For stage 1: Resize to (64, 64), convert to tensor, rescale to [-1, 1], and
+# add a batch dimension. The result is a (1, 3, 64, 64) tensor
+test_im = Image.open('campanile.jpg').resize((64, 64))
+test_im = TF.to_tensor(test_im)
+test_im = 2 * test_im - 1
+test_im = test_im[None]
+
+# Show test image
+print('Test image:')
+media.show_image(test_im[0].permute(1,2,0) / 2. + 0.5)
+URL transformed to HTTPS due to an HSTS policy
+--2025-12-05 06:53:01--  https://cal-cs180.github.io/fa24/hw/proj5/assets/campanile.jpg
+Resolving cal-cs180.github.io (cal-cs180.github.io)... 185.199.108.153, 185.199.109.153, 185.199.110.153, ...
+Connecting to cal-cs180.github.io (cal-cs180.github.io)|185.199.108.153|:443... connected.
+HTTP request sent, awaiting response... 200 OK
+Length: 75608 (74K) [image/jpeg]
+Saving to: ‘campanile.jpg’
+
+
+campanile.jpg         0%[                    ]       0  --.-KB/s               
+campanile.jpg       100%[===================>]  73.84K  --.-KB/s    in 0.007s  
+
+2025-12-05 06:53:01 (9.62 MB/s) - ‘campanile.jpg’ saved [75608/75608]
+
+Test image:
+No description has been provided for this image
+1.1 Forward Process
+Disclaimer about equations: Colab cannot correctly render the math equations below. Please cross-reference them with the part A webpage to make sure that you're looking at the fully correct equation.
+
+A key part of diffusion is the forward process, which takes a clean image and adds noise to it. In this part, we will write a function to implement this. The forward process is defined by:
+
+q
+(
+x
+t
+|
+x
+0
+)
+=
+N
+(
+x
+t
+;
+√
+¯
+α
+t
+x
+0
+,
+(
+1
+−
+¯
+α
+t
+)
+I
+)
+  
+(1)
+ 
+
+which is equivalent to computing
+x
+t
+=
+√
+¯
+α
+t
+x
+0
++
+√
+1
+−
+¯
+α
+t
+ϵ
+where
+ 
+ϵ
+∼
+N
+(
+0
+,
+1
+)
+  
+(2)
+ 
+
+That is, given a clean image 
+x
+0
+, we get a noisy image 
+x
+t
+ at timestep 
+t
+ by sampling from a Gaussian with mean 
+√
+¯
+α
+t
+x
+0
+ and variance 
+(
+1
+−
+¯
+α
+t
+)
+. Note that the forward process is not just adding noise -- we also scale the image.
+
+You will need to use the alphas_cumprod variable, which contains the 
+¯
+α
+t
+ for all 
+t
+∈
+[
+0
+,
+999
+]
+. Remember that 
+t
+=
+0
+ corresponds to a clean image, and larger 
+t
+ corresponds to more noise. Thus, 
+¯
+α
+t
+ is close to 1 for small 
+t
+, and close to 0 for large 
+t
+. Run the forward process on the test image with 
+t
+∈
+[
+250
+,
+500
+,
+750
+]
+. Show the results -- you should get progressively more noisy images.
+
+Delivarables
+Implement the im_noisy = forward(im, t) function
+Show the test image at noise level [250, 500, 750]
+Hints
+The torch.randn_like function is helpful for computing 
+ϵ
+.
+Use the alphas_cumprod variable, which contains an array of the hyperparameters, with alphas_cumprod[t] corresponding to 
+¯
+α
+t
+.
+import matplotlib.pyplot as plt
+import torch
+
+# 1.1 Forward process: define the function
+def forward(im, t: int):
+    """
+    im: clean image x0 in [-1,1], shape (1,3,H,W)
+    t: integer timestep in [0, 999]
+    returns: x_t (noisy version)
+    """
+    alpha_bar = alphas_cumprod[t].to(im.device)  # scalar
+
+    # ε ~ N(0, I)
+    eps = torch.randn_like(im)
+
+    # x_t = sqrt(alpha_bar) * x0 + sqrt(1 - alpha_bar) * eps
+    x_t = torch.sqrt(alpha_bar) * im + torch.sqrt(1.0 - alpha_bar) * eps
+    return x_t
+
+# Generate noisy versions at t = 250, 500, 750
+timesteps = [250, 500, 750]
+noisy_ims = []
+
+for t in timesteps:
+    with torch.no_grad():
+        x_t = forward(test_im, t)     # test_im is your clean image in [-1,1]
+        noisy_ims.append(x_t)
+
+# Helper for visualization: [-1,1] -> [0,1]
+def to_display(x):
+    x = (x.clamp(-1, 1) + 1) / 2.0      # [0,1]
+    x = x[0].permute(1, 2, 0).cpu().numpy()
+    return x
+
+plt.figure(figsize=(12, 4))
+for i, (t, x_t) in enumerate(zip(timesteps, noisy_ims)):
+    plt.subplot(1, 3, i + 1)
+    plt.imshow(to_display(x_t))
+    plt.title(f"t = {t}")
+    plt.axis("off")
+plt.tight_layout()
+plt.show()
+No description has been provided for this image
+1.2 Traditional Denoising
+Let's try to denoise these images using classical methods. Again, take noisy images for timesteps [250, 500, 750], but use Gaussian blur filtering to try to remove the noise. Getting good results should be quite difficult, if not impossible.
+
+Deliverables
+For each of the 3 noisy test images from the previous part, show your best Gaussian-denoised version side by side.
+Hint
+torchvision.transforms.functional.gaussian_blur is useful. Here is the documentation.
+import torchvision.transforms.functional as TF
+#1.2
+# We'll reuse forward() from 1.1 and generate noisy images again
+timesteps = [250, 500, 750]
+noisy_ims = []
+
+for t in timesteps:
+    with torch.no_grad():
+        x_t = forward(test_im, t)
+        noisy_ims.append(x_t)
+
+def gaussian_denoise(im, kernel_size=5, sigma=1.0):
+    """
+    im: (1,3,H,W) in [-1,1]
+    returns: blurred version, same shape
+    """
+    x = im.clone()
+    x0 = x[0]  # (3,H,W)
+    x0_blur = TF.gaussian_blur(x0, kernel_size=kernel_size, sigma=sigma)
+    return x0_blur.unsqueeze(0)
+
+denoised_ims = []
+# You can tune kernel_size/sigma per t if you want
+for x_t in noisy_ims:
+    # Try different params if you want to optimize visually
+    denoised = gaussian_denoise(x_t, kernel_size=5, sigma=1.0)
+    denoised_ims.append(denoised)
+
+# Visualize: top row = noisy, bottom row = Gaussian-denoised
+plt.figure(figsize=(12, 8))
+for i, (t, x_t, x_d) in enumerate(zip(timesteps, noisy_ims, denoised_ims)):
+    # Top row: noisy
+    plt.subplot(2, 3, i + 1)
+    plt.imshow(to_display(x_t))
+    plt.title(f"Noisy (t = {t})")
+    plt.axis("off")
+
+    # Bottom row: denoised
+    plt.subplot(2, 3, i + 1 + 3)
+    plt.imshow(to_display(x_d))
+    plt.title(f"Gaussian denoised (t = {t})")
+    plt.axis("off")
+
+plt.tight_layout()
+plt.show()
+No description has been provided for this image
+1.3 One-Step Denoising
+Now, we'll use a pretrained diffusion model to denoise. The actual denoiser can be found at stage_1.unet. This is a UNet that has already been trained on a very, very large dataset of 
+(
+x
+0
+,
+x
+t
+)
+ pairs of images. We can use it to recover Gaussian noise from the image. Then, we can remove this noise to recover (something close to) the original image. Note: this UNet is conditioned on the amount of Gaussian noise by taking timestep 
+t
+ as additional input.
+
+Because this diffusion model was trained with text conditioning, we also need a text prompt embedding. We provide the embedding for the prompt "a high quality photo" for you to use. Later on, you can use your own text prompts.
+
+Deliverables
+For the 3 noisy images from 1.2 (t = [250, 500, 750]):
+
+Using the UNet, denoise the image by estimating the noise.
+Estimate the noise in the new noisy image, by passing it through stage_1.unet
+Remove the noise from the noisy image to obtain an estimate of the original image.
+Visualize the original image, the noisy image, and the estimate of the original image
+Hints
+When removing the noise, you can't simply subtract the noise estimate. Recall that in equation 2 we need to scale the noise. Look at equation 2 to figure out how we predict 
+x
+0
+ from 
+x
+t
+ and 
+t
+.
+You will probably have to wrangle tensors to the correct device and into the correct data types. The functions .to(device) and .half() will be useful. The denoiser is loaded as half precision (to save memory), so inputs to the denoiser will also need to be half precision.
+The signature for the unet is stage_1.unet(image, t, encoder_hidden_states=prompt_embeds, return_dict=False). You need to pass in the noisy image, the timestep, and the prompt embeddings. The return_dict argument just makes the output nicer.
+The unet will output a tensor of shape (1, 6, 64, 64). This is because DeepFloyd was trained to predict the noise as well as variance of the noise. The first 3 channels is the noise estimate, which you will use. The second 3 channels is the variance estimate which you may ignore for now.
+To save GPU memory, you should wrap all of your code in a with torch.no_grad(): context. This tells torch not to do automatic differentiation, and saves a considerable amount of memory.
+# Please use this prompt embedding
+#1.3
+prompt_embeds = prompt_embeds_dict["a high quality photo"].to("cuda").half()
+
+with torch.no_grad():
+  for t in [250, 500, 750]:
+    # Get alpha bar
+    alpha_cumprod = alphas_cumprod[t]
+
+    # Run forward process
+    # ===== your code here! =====
+    # test_im is x0, forward() gives x_t
+    im_noisy = forward(test_im, t)
+    # ==== end of code ====
+
+    # Estimate noise in noisy image
+    noise_est = stage_1.unet(
+        im_noisy.half().cuda(),
+        t,
+        encoder_hidden_states=prompt_embeds,
+        return_dict=False
+    )[0]
+
+    # Take only first 3 channels, and move result to cpu
+    noise_est = noise_est[:, :3].cpu()
+
+    # Remove the noise
+    # ===== your code here! =====
+    # \hat{x}_0 = (x_t - sqrt(1 - alphā_t) * \hat{ε}) / sqrt(alphā_t)
+    sqrt_alpha_bar = torch.sqrt(alpha_cumprod)
+    sqrt_one_minus = torch.sqrt(1.0 - alpha_cumprod)
+
+    clean_est = (im_noisy - sqrt_one_minus * noise_est) / sqrt_alpha_bar
+    clean_est = clean_est.detach().numpy()
+    # ==== end of code ====
+# Part 1.3 – One-step denoising with UNet + visualization
+
+prompt_embeds = prompt_embeds_dict["a high quality photo"].to("cuda").half()
+
+timesteps = [250, 500, 750]
+
+noisy_list = []
+clean_list = []
+
+with torch.no_grad():
+    for t in timesteps:
+        # Get alphā_t
+        alpha_cumprod = alphas_cumprod[t]
+
+        # ---- Forward process: get x_t from x_0 ----
+        im_noisy = forward(test_im, t)          # (1,3,64,64), [-1,1]
+        noisy_list.append(im_noisy.detach().clone())
+
+        # ---- Estimate noise ε̂ with UNet ----
+        noise_est = stage_1.unet(
+            im_noisy.half().cuda(),
+            t,
+            encoder_hidden_states=prompt_embeds,
+            return_dict=False
+        )[0]
+
+        # Use only first 3 channels (noise prediction), move to CPU to match im_noisy
+        noise_est = noise_est[:, :3].cpu()
+
+        # ---- Recover x̂_0 using Eq. (1.3) ----
+        # x̂_0 = (x_t - sqrt(1 - alphā_t) * ε̂) / sqrt(alphā_t)
+        sqrt_alpha_bar = torch.sqrt(alpha_cumprod)
+        sqrt_one_minus = torch.sqrt(1.0 - alpha_cumprod)
+
+        clean_est = (im_noisy - sqrt_one_minus * noise_est) / sqrt_alpha_bar
+        clean_est = clean_est.clamp(-1, 1)      # keep in valid range
+        clean_list.append(clean_est.detach().clone())
+
+# ---------- Visualization: original, noisy, denoised ----------
+plt.figure(figsize=(10, 9))
+
+for i, (t, im_noisy, im_clean) in enumerate(zip(timesteps, noisy_list, clean_list)):
+    col = i + 1
+
+    # Row 1: original (same for all t, but we repeat for clarity)
+    plt.subplot(3, 3, col)
+    plt.imshow(to_display(test_im))
+    plt.title(f"Original (t={t})")
+    plt.axis("off")
+
+    # Row 2: noisy x_t
+    plt.subplot(3, 3, col + 3)
+    plt.imshow(to_display(im_noisy))
+    plt.title(f"Noisy (t={t})")
+    plt.axis("off")
+
+    # Row 3: one-step denoised x̂_0
+    plt.subplot(3, 3, col + 6)
+    plt.imshow(to_display(im_clean))
+    plt.title(f"Denoised (t={t})")
+    plt.axis("off")
+
+plt.tight_layout()
+plt.show()
+No description has been provided for this image
+1.4 Iterative Denoising
+In part 1.3, you should see that the denoising UNet does a much better job of projecting the image onto the natural image manifold, but it does get worse as you add more noise. This makes sense, as the problem is much harder with more noise!
+
+But diffusion models are designed to denoise iteratively. In this part we will implement this.
+
+In theory, we could start with noise 
+x
+1000
+ at timestep 
+T
+=
+1000
+, denoise for one step to get an estimate of 
+x
+999
+, and carry on until we get 
+x
+0
+. But this would require running the diffusion model 1000 times, which is quite slow (and costs $$$).
+
+It turns out, we can actually speed things up by skipping steps. The rationale for why this is possible is due to a connection with differential equations. It's a tad complicated, and out of scope for this course, but if you're interested you can check out this excellent article.
+
+To skip steps we can create a list of timesteps that we'll call strided_timesteps, which will be much shorter than the full list of 1000 timesteps. strided_timesteps[0] will correspond to the noisiest image (and thus the largest 
+t
+) and strided_timesteps[-1] will correspond to a clean image (and thus 
+t
+=
+0
+). One simple way of constructing this list is by introducing a regular stride step (e.g. stride of 30 works well).
+
+On the ith denoising step we are at 
+t
+=
+ strided_timesteps[i], and want to get to 
+t
+′
+=
+ strided_timesteps[i+1] (from more noisy to less noisy). To actually do this, we have the following formula:
+
+x
+t
+′
+=
+√
+¯
+α
+t
+′
+β
+t
+1
+−
+¯
+α
+t
+x
+0
++
+√
+α
+t
+(
+1
+−
+¯
+α
+t
+′
+)
+1
+−
+¯
+α
+t
+x
+t
++
+v
+σ
+  
+(3)
+ 
+
+where:
+
+x
+t
+ is your image at timestep 
+t
+x
+t
+′
+ is your noisy image at timestep 
+t
+′
+ where 
+t
+′
+<
+t
+ (less noisy)
+¯
+α
+t
+ is defined by alphas_cumprod, as explained above.
+α
+t
+=
+¯
+α
+t
+/
+¯
+α
+t
+′
+β
+t
+=
+1
+−
+α
+t
+x
+0
+ is our current estimate of the clean image using equation 2 just like in section 1.3
+The 
+v
+σ
+ is random noise, which in the case of DeepFloyd is also predicted. The process to compute this is not very important for us, so we supply a function, add_variance, to do this for you.
+
+You can think of this as a linear interpolation between the signal and noise:
+
+interpolation.png
+
+(Image Source)
+
+For more information, see equations 6 and 7 of the DDPM paper. Be careful about bars above the alpha! Some have them and some do not.
+
+First create the list strided_timesteps. You should start at timestep 990, and take step sizes of size 30 until you arrive at 0. After completing the problem set, feel free to try different "schedules" of timesteps.
+
+Also implement the function iterative_denoise(image, i_start), which takes a noisy image image, as well as a starting index i_start. The function should denoise an image starting at timestep timestep[i_start], applying the above formula to obtain an image at timestep t' = timestep[i_start + 1], and repeat iteratively until we arrive at a clean image.
+
+Add noise to the test image im to timestep timestep[10] and display this image. Then run the iterative_denoise function on the noisy image, with i_start = 10, to obtain a clean image and display it. Please display every 5th image of the denoising loop. Compare this to the "one-step" denoising method from the previous section, and to gaussian blurring.
+
+Deliverables
+Using i_start = 10:
+
+Create strided_timesteps: a list of monotonically decreasing timesteps, starting at 990, with a stride of 30, eventually reaching 0. Also initialize the timesteps using the function stage_1.scheduler.set_timesteps(timesteps=strided_timesteps)
+Complete the iterative_denoise function
+Show the noisy image every 5th loop of denoising (it should gradually become less noisy)
+Show the final predicted clean image, using iterative denoising
+Show the predicted clean image using only a single denoising step, as was done in the previous part. This should look much worse.
+Show the predicted clean image using gaussian blurring, as was done in part 1.2.
+Hints
+Remember, the unet will output a tensor of shape (1, 6, 64, 64). This is because DeepFloyd was trained to predict the noise as well as variance of the noise. The first 3 channels is the noise estimate, which you will use here. The second 3 channels is the variance estimate which you will pass to the add_variance function
+Read the documentation for the add_variance function to figure out how to use it to add the 
+v
+σ
+ to the image.
+Depending on if your final images are torch tensors or numpy arrays, you may need to modify the show_images call a bit.
+# Make timesteps. Must be list of ints satisfying:
+# - monotonically decreasing
+# - ends at 0
+# - begins close to or at 999
+
+# Make strided_timesteps
+# ===== your code here! =====
+
+# TODO:
+# create `strided_timesteps`, a list of timesteps, from 990 to 0 in steps of 30
+strided_timesteps = list(range(990, -1, -30))
+
+# ==== end of code ====
+
+stage_1.scheduler.set_timesteps(timesteps=strided_timesteps)    # Need this b/c variance computation
+#1.4
+import torch
+import numpy as np
+import matplotlib.pyplot as plt
+import torchvision.transforms.functional as TF
+
+def to_display(x):
+  if isinstance(x, np.ndarray):
+      x = torch.from_numpy(x)
+  x = x.clamp(-1, 1)
+  x = (x + 1) / 2.0      # [-1,1] -> [0,1]
+  x = x[0].permute(1, 2, 0).cpu().numpy().astype(np.float32)  # <-- force float32
+  return x
+
+
+
+# Make timesteps. Must be list of ints satisfying:
+# - monotonically decreasing
+# - ends at 0
+# - begins close to or at 999
+
+# Make strided_timesteps
+# ===== your code here! =====
+
+# TODO:
+# create `strided_timesteps`, a list of timesteps, from 990 to 0 in steps of 30
+strided_timesteps = list(range(990, -1, -30))
+
+# ==== end of code ====
+
+stage_1.scheduler.set_timesteps(timesteps=strided_timesteps)    # we still call this to match notebook
+
+def add_variance(predicted_variance, t, image):
+  '''
+  Simplified version: we skip adding extra variance v_σ to avoid
+  scheduler device issues. This keeps the main DDPM update and
+  makes the code run without CUDA/CPU mismatch.
+  '''
+  return image
+
+def iterative_denoise(image, i_start, prompt_embeds, timesteps, display=True):
+  with torch.no_grad():
+    intermediate_images = []
+    intermediate_steps = []
+
+    for i in range(i_start, len(timesteps) - 1):
+      # Get timesteps
+      t = timesteps[i]
+      prev_t = timesteps[i+1]
+
+      # Get alphas, betas
+      # ===== your code here! =====
+
+      # TODO:
+      # get `alpha_cumprod` and `alpha_cumprod_prev` for timestep t from `alphas_cumprod`
+      # compute `alpha`
+      # compute `beta`
+      alpha_cumprod      = alphas_cumprod[t].to(image.device)       # \bar{α}_t
+      alpha_cumprod_prev = alphas_cumprod[prev_t].to(image.device)  # \bar{α}_{t'}
+      alpha = alpha_cumprod / alpha_cumprod_prev                    # α_t
+      beta  = 1.0 - alpha                                           # β_t
+
+      # ==== end of code ====
+
+      # Get noise estimate
+      model_output = stage_1.unet(
+          image,
+          t,
+          encoder_hidden_states=prompt_embeds,
+          return_dict=False
+      )[0]
+
+      # Split estimate into noise and variance estimate
+      noise_est, predicted_variance = torch.split(model_output, image.shape[1], dim=1)
+
+      # Eq (6) and (7) of DDPM
+      # ===== your code here! =====
+
+      # TODO:
+      # compute `pred_prev_image`, the DDPM estimate for the image at the
+      # next timestep, which is slightly less noisy. Use the equation for
+      # x_{t'} in the notes above.
+
+      # 1) estimate x0 using Eq (1.3):
+      sqrt_alpha_bar = torch.sqrt(alpha_cumprod)
+      sqrt_one_minus = torch.sqrt(1.0 - alpha_cumprod)
+      x0_hat = (image - sqrt_one_minus * noise_est) / sqrt_alpha_bar
+
+      # 2) coefficients for Eq (1.4) *without* extra variance:
+      # x_{t'} ≈ coeff_x0 * x0_hat + coeff_xt * x_t
+      coeff_x0 = (torch.sqrt(alpha_cumprod_prev) * beta) / (1.0 - alpha_cumprod)
+      coeff_xt = (torch.sqrt(alpha) * (1.0 - alpha_cumprod_prev)) / (1.0 - alpha_cumprod)
+
+      pred_prev_image = coeff_x0 * x0_hat + coeff_xt * image
+
+      # 3) simplified add_variance (identity)
+      pred_prev_image = add_variance(predicted_variance, t, pred_prev_image)
+
+      # ==== end of code ====
+
+      image = pred_prev_image
+
+      # Save every 5th loop of denoising for visualization
+      if display and ((i - i_start) % 5 == 0 or i == len(timesteps) - 2):
+        intermediate_images.append(image.detach().cpu())
+        intermediate_steps.append(i)
+
+    clean = image.cpu().detach().numpy()
+
+  # Show the noisy image every 5th loop of denoising (it should gradually become less noisy)
+  if display and len(intermediate_images) > 0:
+    plt.figure(figsize=(3 * len(intermediate_images), 3))
+    for idx, (img, step) in enumerate(zip(intermediate_images, intermediate_steps)):
+      plt.subplot(1, len(intermediate_images), idx + 1)
+      plt.imshow(to_display(img))
+      plt.title(f"i = {step}")
+      plt.axis("off")
+    plt.tight_layout()
+    plt.show()
+
+  return clean
+
+# Please use this prompt embedding
+prompt_embeds = prompt_embeds_dict["a high quality photo"].to(device).half()
+
+# Add noise
+i_start = 10
+t = strided_timesteps[i_start]
+im_noisy = forward(test_im, t).half().to(device)
+
+# Denoise
+clean = iterative_denoise(im_noisy,
+                          i_start=i_start,
+                          prompt_embeds=prompt_embeds,
+                          timesteps=strided_timesteps)
+
+# One step denoise
+# ===== your code here! =====
+
+# TODO:
+# Compute the one step estimate of the clean image. Feel free to copy and paste
+# code from part 1.3. Store the image into `clean_one_step`.
+
+with torch.no_grad():
+  alpha_cumprod_t = alphas_cumprod[t].to(device)
+
+  model_output = stage_1.unet(
+      im_noisy,
+      t,
+      encoder_hidden_states=prompt_embeds,
+      return_dict=False
+  )[0]
+
+  noise_est = model_output[:, :3]  # first 3 channels
+
+  sqrt_alpha_bar_t = torch.sqrt(alpha_cumprod_t)
+  sqrt_one_minus_t = torch.sqrt(1.0 - alpha_cumprod_t)
+
+  clean_one_step_tensor = (im_noisy - sqrt_one_minus_t * noise_est) / sqrt_alpha_bar_t
+  clean_one_step_tensor = clean_one_step_tensor.clamp(-1, 1).cpu()
+  clean_one_step = clean_one_step_tensor.detach().numpy()
+
+# ==== end of code ====
+
+# Gaussian blur denoise
+# ===== your code here! =====
+
+# TODO:
+# Compute the gaussian blurred noisy image, using kernel_size=5 and sigma=2.
+# Feel free to copy code from part 1.2. Store the image as `blur_filtered`
+# Show results
+
+noisy_cpu = im_noisy.detach().cpu().float()
+x_noisy = noisy_cpu[0]  # (3,64,64)
+
+x_blur = TF.gaussian_blur(x_noisy, kernel_size=5, sigma=2.0)
+blur_filtered_tensor = x_blur.unsqueeze(0)  # (1,3,64,64)
+blur_filtered = blur_filtered_tensor.detach().numpy()
+
+# ==== end of code ====
+
+# ========= Visualization: iterative vs one-step vs Gaussian blur ==========
+plt.figure(figsize=(12, 4))
+
+imgs = [
+    (torch.from_numpy(clean),         "Iterative denoising"),
+    (torch.from_numpy(clean_one_step),"One-step denoising"),
+    (torch.from_numpy(blur_filtered), "Gaussian blur"),
+]
+
+for i, (img, title) in enumerate(imgs):
+  plt.subplot(1, 3, i + 1)
+  plt.imshow(to_display(img))
+  plt.title(title)
+  plt.axis("off")
+
+plt.tight_layout()
+plt.show()
+No description has been provided for this image
+No description has been provided for this image
+1.5 Diffusion Model Sampling
+In part 1.4, we use the diffusion model to denoise an image. Another thing we can do with the iterative_denoise function is to generate images from scratch. We can do this by setting i_start = 0 and passing in random noise. This effectively denoises pure noise. Please do this, and show 5 results of "a high quality photo".
+
+Deliverables
+Show 5 sampled images
+Hints
+Use torch.randn to make the noise.
+Make sure you move the tensor to the correct device and correct data type by calling .half() and .to(device).
+The quality of the images will not be spectacular, but should be reasonable images. We will fix this in the next section with CFG.
+# Please use this text prompt
+prompt_embeds = prompt_embeds_dict["a high quality photo"]
+
+generated = {}
+#2.1
+import torch
+import matplotlib.pyplot as plt
+import numpy as np
+
+# Please use this text prompt
+prompt_embeds = prompt_embeds_dict["a high quality photo"].to(device).half()
+
+generated = {}
+
+# ---- Generate 5 samples from pure noise ----
+with torch.no_grad():
+  for i in range(5):
+    # 1) start from pure Gaussian noise
+    noise = torch.randn(1, 3, 64, 64, device=device, dtype=torch.float16)
+
+    # 2) run iterative denoising starting from i_start = 0
+    clean = iterative_denoise(
+        image=noise,
+        i_start=0,
+        prompt_embeds=prompt_embeds,
+        timesteps=strided_timesteps,
+        display=False   # don't show intermediate steps here
+    )
+
+    generated[i] = clean   # store numpy array
+
+# ---- Visualize the 5 generated images ----
+plt.figure(figsize=(15, 3))
+for i in range(5):
+  img = torch.from_numpy(generated[i])  # (1,3,64,64)
+  plt.subplot(1, 5, i + 1)
+  plt.imshow(to_display(img))
+  plt.title(f"Sample {i+1}")
+  plt.axis("off")
+plt.tight_layout()
+plt.show()
+No description has been provided for this image
+1.6 Classifier Free Guidance
+You may have noticed that some of the generated images in the prior section are not very good. In order to greatly improve image quality (at the expense of image diversity), we can use a technique called Classifier-Free Guidance.
+
+In CFG, we compute both a noise estimate conditioned on a text prompt, and an unconditional noise estimate. We denote these 
+ϵ
+c
+ and 
+ϵ
+u
+. Then, we let our new noise estimate be
+
+ϵ
+=
+ϵ
+u
++
+γ
+(
+ϵ
+c
+−
+ϵ
+u
+)
+  
+(4)
+ 
+
+where 
+γ
+ controls the strength of CFG. Notice that for 
+γ
+=
+0
+, we get an unconditional noise estimate, and for 
+γ
+=
+1
+ we get the conditional noise estimate. The magic happens when 
+γ
+>
+1
+. In this case, we get much higher quality images. Why this happens is still up to vigorous debate. For more information on CFG, you can check out this blog post.
+
+Please implement the iterative_denoise_cfg function, identical to the iterative_denoise function but using classifier-free guidance. To get an unconditional noise estimate, we can just pass an empty prompt embedding to the diffusion model (the model was trained to predict an unconditional noise estimate when given an empty text prompt).
+
+Disclaimer
+Before, we used "a high quality photo" as a "null" condition. Now, we will use the actual "" null prompt for unconditional guidance for CFG. In the later part, you should always use "" null prompt for unconditional guidance and use "a high quality photo" for unconditional generation.
+
+Deliverables
+Implement the iterative_denoise_cfg function
+Show 5 images of "a high quality photo" with a CFG scale of 
+γ
+=
+7
+Hints
+You will need to run the UNet twice, once for the conditional prompt embedding, and once for the unconditional
+The UNet will predict both a conditional and an unconditional variance. Just use the conditional variance with the add_variance function.
+The resulting images should be much better than those in the prior section
+#2.2
+# The condition prompt embedding
+prompt_embeds = prompt_embeds_dict['a high quality photo'].to(device).half()
+
+# The unconditional prompt embedding ("")
+uncond_prompt_embeds = prompt_embeds_dict[''].to(device).half()
+
+
+def iterative_denoise_cfg(image, i_start, prompt_embeds, uncond_prompt_embeds,
+                          timesteps, scale=7, display=True):
+  with torch.no_grad():
+    intermediate_images = []
+    intermediate_steps = []
+
+    for i in range(i_start, len(timesteps) - 1):
+      # Get timesteps
+      t = timesteps[i]
+      prev_t = timesteps[i+1]
+
+      # Get alphas, betas
+      # ===== your code here! =====
+
+      # TODO:
+      # Get `alpha_cumprod`, `alpha_cumprod_prev`, `alpha`, `beta`
+      # Feel free to copy code from part 1.4
+      alpha_cumprod      = alphas_cumprod[t].to(image.device)       # \bar{α}_t
+      alpha_cumprod_prev = alphas_cumprod[prev_t].to(image.device)  # \bar{α}_{t'}
+      alpha = alpha_cumprod / alpha_cumprod_prev                    # α_t
+      beta  = 1.0 - alpha                                           # β_t
+
+      # ==== end of code ====
+
+      # Get cond noise estimate
+      model_output = stage_1.unet(
+          image,
+          t,
+          encoder_hidden_states=prompt_embeds,
+          return_dict=False
+      )[0]
+
+      # Get uncond noise estimate
+      uncond_model_output = stage_1.unet(
+          image,
+          t,
+          encoder_hidden_states=uncond_prompt_embeds,
+          return_dict=False
+      )[0]
+
+      # Split estimate into noise and variance estimate
+      noise_est, predicted_variance = torch.split(model_output, image.shape[1], dim=1)
+      uncond_noise_est, _ = torch.split(uncond_model_output, image.shape[1], dim=1)
+
+      # Do classifier free guidance
+      # ===== your code here! =====
+
+      # TODO:
+      # Compute the CFG noise estimate and put it in `noise_est`.
+      # ε = ε_u + γ (ε_c - ε_u)
+      noise_est = uncond_noise_est + scale * (noise_est - uncond_noise_est)
+
+      # ==== end of code ====
+
+      # Eq (6) and (7) of DDPM
+      # ===== your code here! =====
+
+      # TODO:
+      # Get `pred_prev_image`, the next less noisy image.
+      # Feel free to copy code from part 1.4
+
+      # 1) Estimate x0 using Eq (1.3)
+      sqrt_alpha_bar = torch.sqrt(alpha_cumprod)
+      sqrt_one_minus = torch.sqrt(1.0 - alpha_cumprod)
+      x0_hat = (image - sqrt_one_minus * noise_est) / sqrt_alpha_bar
+
+      # 2) Coefficients for Eq (1.4)
+      coeff_x0 = (torch.sqrt(alpha_cumprod_prev) * beta) / (1.0 - alpha_cumprod)
+      coeff_xt = (torch.sqrt(alpha) * (1.0 - alpha_cumprod_prev)) / (1.0 - alpha_cumprod)
+
+      pred_prev_image = coeff_x0 * x0_hat + coeff_xt * image
+
+      # 3) Add variance (our simplified helper; may just be identity)
+      pred_prev_image = add_variance(predicted_variance, t, pred_prev_image)
+
+      # ==== end of code ====
+
+      image = pred_prev_image
+
+      if display and ((i - i_start) % 5 == 0 or i == len(timesteps) - 2):
+        intermediate_images.append(image.detach().cpu())
+        intermediate_steps.append(i)
+
+    clean = image.cpu().detach().numpy()
+
+  # Optional: visualize intermediate steps
+  if display and len(intermediate_images) > 0:
+    plt.figure(figsize=(3 * len(intermediate_images), 3))
+    for idx, (img, step) in enumerate(zip(intermediate_images, intermediate_steps)):
+      plt.subplot(1, len(intermediate_images), idx + 1)
+      plt.imshow(to_display(img))
+      plt.title(f"i = {step}")
+      plt.axis("off")
+    plt.tight_layout()
+    plt.show()
+
+  return clean
+
+
+# -------------------------------------------------
+# Generate 5 CFG samples of "a high quality photo"
+# -------------------------------------------------
+generated = {}
+
+with torch.no_grad():
+  for i in range(5):
+    # start from pure noise
+    noise = torch.randn(1, 3, 64, 64, device=device, dtype=torch.float16)
+
+    clean = iterative_denoise_cfg(
+        image=noise,
+        i_start=0,
+        prompt_embeds=prompt_embeds,
+        uncond_prompt_embeds=uncond_prompt_embeds,
+        timesteps=strided_timesteps,
+        scale=7,          # γ = 7
+        display=False     # no intermediate images
+    )
+
+    generated[i] = clean
+
+# Visualize the 5 CFG-generated images
+plt.figure(figsize=(15, 3))
+for i in range(5):
+  img = torch.from_numpy(generated[i])  # (1,3,64,64)
+  plt.subplot(1, 5, i + 1)
+  plt.imshow(to_display(img))
+  plt.title(f"CFG Sample {i+1}")
+  plt.axis("off")
+plt.tight_layout()
+plt.show()
+No description has been provided for this image
+1.7 Image-to-image Translation
+In part 1.4, we take a real image, add noise to it, and then denoise. This effectively allows us to make edits to existing images. The more noise we add, the larger the edit will be. This works because in order to denoise an image, the diffusion model must to some extent "hallucinate" new things -- the model has to be "creative." Another way to think about it is that the denoising process "forces" a noisy image back onto the manifold of natural images.
+
+Here, we're going to take the original test image, noise it a little, and force it back onto the image manifold without any conditioning. Effectively, we're going to get an image that is similar to the test image (with a low-enough noise level). This follows the SDEdit algorithm.
+
+To start, please run the forward process to get a noisy test image, and then run the iterative_denoise_cfg function using a starting index of [1, 3, 5, 7, 10, 20] steps and show the results, labeled with the starting index. You should see a series of "edits" to the original image, gradually matching the original image closer and closer.
+
+Deliverables
+Edits of the test image, using the given prompt at noise levels [1, 3, 5, 7, 10, 20] with text prompt "a high quality photo"
+Edits of 2 of your own test images, using the same procedure.
+Hints
+You should have a range of images, gradually looking more like the original image
+# Please use this prompt, as an "unconditional" text prompt
+prompt_embeds = prompt_embeds_dict["a high quality photo"]
+
+imgs_dict = {}
+#2.3
+import matplotlib.pyplot as plt
+from PIL import Image
+import torchvision.transforms.functional as TF
+import torch
+import numpy as np
+
+# Please use this prompt, as an "unconditional" text prompt
+# (for editing we condition on "a high quality photo" and still use the "" embedding inside CFG)
+prompt_embeds = prompt_embeds_dict["a high quality photo"].to(device).half()
+uncond_prompt_embeds = prompt_embeds_dict[""].to(device).half()
+
+imgs_dict = {}   # will store results
+
+
+# -----------------------------------------------------------
+# Helper: load your own image as tensor (1,3,64,64) in [-1,1]
+# -----------------------------------------------------------
+def load_image_as_tensor(path):
+    im = Image.open(path).convert("RGB").resize((64, 64))
+    im = TF.to_tensor(im)          # [0,1]
+    im = 2 * im - 1                # [-1,1]
+    im = im[None]                  # add batch dim -> (1,3,64,64)
+    return im
+
+
+# ===========================================================
+# 1) Test image edits (campanile) for i_start = [1,3,5,7,10,20]
+# ===========================================================
+noise_indices = [1, 3, 5, 7, 10, 20]
+imgs_dict["campanile"] = {}
+
+with torch.no_grad():
+    for i_start in noise_indices:
+        t = strided_timesteps[i_start]
+        # forward: add noise at timestep t
+        im_noisy = forward(test_im, t).to(device).half()
+
+        # iterative denoise with CFG starting from this index
+        clean_edit = iterative_denoise_cfg(
+            image=im_noisy,
+            i_start=i_start,
+            prompt_embeds=prompt_embeds,
+            uncond_prompt_embeds=uncond_prompt_embeds,
+            timesteps=strided_timesteps,
+            scale=7,
+            display=False
+        )
+
+        imgs_dict["campanile"][i_start] = clean_edit
+
+# ---- Plot original + 6 edits for test image ----
+plt.figure(figsize=(18, 3))
+
+# original
+plt.subplot(1, len(noise_indices) + 1, 1)
+plt.imshow(to_display(test_im))
+plt.title("Original")
+plt.axis("off")
+
+# edits
+for idx, i_start in enumerate(noise_indices):
+    img = torch.from_numpy(imgs_dict["campanile"][i_start])
+    plt.subplot(1, len(noise_indices) + 1, idx + 2)
+    plt.imshow(to_display(img))
+    plt.title(f"i_start = {i_start}")
+    plt.axis("off")
+
+plt.tight_layout()
+plt.show()
+
+
+# ===========================================================
+# 2) Edits of TWO of your own test images
+#    👉 Replace 'my_image1.jpg' and 'my_image2.jpg' with your files
+# ===========================================================
+own_paths = ["cat.png", "flower.png"]   # <-- change these filenames
+own_keys  = ["own1", "own2"]
+
+for key, path in zip(own_keys, own_paths):
+    try:
+        base_im = load_image_as_tensor(path)
+    except FileNotFoundError:
+        print(f"⚠️ File not found: {path} – upload/rename your image and rerun.")
+        continue
+
+    base_im = base_im.to(device).half()
+    imgs_dict[key] = {}
+
+    with torch.no_grad():
+        for i_start in noise_indices:
+            t = strided_timesteps[i_start]
+            im_noisy = forward(base_im, t).to(device).half()
+
+            clean_edit = iterative_denoise_cfg(
+                image=im_noisy,
+                i_start=i_start,
+                prompt_embeds=prompt_embeds,
+                uncond_prompt_embeds=uncond_prompt_embeds,
+                timesteps=strided_timesteps,
+                scale=7,
+                display=False
+            )
+
+            imgs_dict[key][i_start] = clean_edit
+
+    # Plot for this custom image
+    plt.figure(figsize=(18, 3))
+    plt.subplot(1, len(noise_indices) + 1, 1)
+    plt.imshow(to_display(base_im.detach().cpu()))
+    plt.title(f"{key} - Original")
+    plt.axis("off")
+
+    for idx, i_start in enumerate(noise_indices):
+        img = torch.from_numpy(imgs_dict[key][i_start])
+        plt.subplot(1, len(noise_indices) + 1, idx + 2)
+        plt.imshow(to_display(img))
+        plt.title(f"i_start = {i_start}")
+        plt.axis("off")
+
+    plt.tight_layout()
+    plt.show()
+No description has been provided for this image
+No description has been provided for this image
+No description has been provided for this image
+Part 3: Visual Anagrams
+In this part, we are finally ready to implement Visual Anagrams and create optical illusions with diffusion models. In this part, we will create an image that looks like "an oil painting of an old man", but when flipped upside down will reveal "an oil painting of people around a campfire".
+
+To do this, we will denoise an image 
+x
+t
+ at step 
+t
+ normally with the prompt "an oil painting of an old man", to obtain noise estimate 
+ϵ
+1
+. But at the same time, we will flip 
+x
+t
+ upside down, and denoise with the prompt "an oil painting of people around a campfire", to get noise estimate 
+ϵ
+2
+. We can flip 
+ϵ
+2
+ back, to make it right-side up, and average the two noise estimates. We can then perform a reverse diffusion step with the averaged noise estimate.
+
+The full algorithm is:
+
+ϵ
+1
+=
+UNet
+(
+x
+t
+,
+t
+,
+p
+1
+)
+
+ϵ
+2
+=
+flip
+(
+UNet
+(
+flip
+(
+x
+t
+)
+,
+t
+,
+p
+2
+)
+)
+
+ϵ
+=
+(
+ϵ
+1
++
+ϵ
+2
+)
+/
+2
+
+where UNet is the diffusion model UNet from before, 
+flip
+(
+⋅
+)
+ is a function that flips the image, and 
+p
+1
+ and 
+p
+2
+ are two different text prompt embeddings. And our final noise estimate is 
+ϵ
+. Please implement the above algorithm and show example of an illusion.
+
+Deliverables
+Correctly implemented visual_anagrams function
+A visual anagram where on one orientation "an oil painting of people around a campfire" is displayed and, when flipped, "an oil painting of an old man" is displayed.
+2 more illusions of your choice that change appearance when you flip it upside down (see the appendix to generate your own prompts)
+Hints
+You may have to run multiple times to get a really good result for the same reasons as above
+def make_flip_illusion(image, i_start, prompt_embeds, uncond_prompt_embeds, timesteps, scale=7, display=True):
+  return
+# ===========================
+# Part 3 – Visual Anagrams
+# ===========================
+import torch
+import numpy as np
+import matplotlib.pyplot as plt
+
+# ---------- Helper: tensor -> displayable image (float32) ----------
+def to_display_img(img):
+    """
+    img: numpy array or torch tensor of shape (1, 3, H, W) in [-1, 1]
+    returns: numpy array (H, W, 3) in [0, 1], float32
+    """
+    if isinstance(img, np.ndarray):
+        t = torch.from_numpy(img)
+    else:
+        t = img
+
+    # (1,3,H,W) -> (H,W,3)
+    t = t[0].permute(1, 2, 0)
+    # map from [-1,1] to [0,1], clamp, and cast to float32
+    t = (t / 2.0 + 0.5).clamp(0.0, 1.0).to(torch.float32)
+    return t.cpu().numpy()
+
+
+# ---------- Core visual-anagram function ----------
+def visual_anagrams(
+    image,
+    i_start,
+    prompt_embeds,
+    flip_prompt_embeds,
+    timesteps,
+    weight_upright=0.7,
+):
+    """
+    image: (1,3,64,64) starting tensor (usually pure noise), on any device
+    i_start: starting index into `timesteps` (0 = full generation from pure noise)
+    prompt_embeds:       embedding for upright prompt p1
+    flip_prompt_embeds:  embedding for flipped prompt p2
+    timesteps: 1D tensor/list of ints (e.g., strided_timesteps, descending)
+    weight_upright: w in [0,1] for ε = w*ε1 + (1-w)*ε2
+    """
+    x = image.to(device).to(torch.float16)
+
+    with torch.no_grad():
+        for i in range(i_start, len(timesteps) - 1):
+            t_int      = int(timesteps[i])        # current timestep index
+            prev_t_int = int(timesteps[i + 1])    # next (less noisy) timestep
+
+            # --- alpha-bar values ---
+            alpha_bar_t    = alphas_cumprod[t_int].to(x.device).to(x.dtype)
+            alpha_bar_prev = alphas_cumprod[prev_t_int].to(x.device).to(x.dtype)
+
+            # ε₁: upright branch with prompt p₁
+            model_up = stage_1.unet(
+                x,
+                t_int,
+                encoder_hidden_states=prompt_embeds,
+                return_dict=False
+            )[0]
+            eps1 = model_up[:, :3]  # first 3 channels = noise
+
+            # ε₂: flipped branch with prompt p₂
+            # "Upside down" ≈ rotate 180° → flip in H and W
+            x_flip = torch.flip(x, dims=[2, 3])
+            model_flip = stage_1.unet(
+                x_flip,
+                t_int,
+                encoder_hidden_states=flip_prompt_embeds,
+                return_dict=False
+            )[0]
+            eps2 = model_flip[:, :3]
+            # flip noise back
+            eps2 = torch.flip(eps2, dims=[2, 3])
+
+            # weighted average noise: ε = w*ε₁ + (1-w)*ε₂
+            w = weight_upright
+            eps = w * eps1 + (1.0 - w) * eps2
+
+            # estimate x₀ from x_t and ε  (Eq. 1.3)
+            sqrt_alpha_bar    = torch.sqrt(alpha_bar_t)
+            sqrt_one_minus_ab = torch.sqrt(1.0 - alpha_bar_t)
+            x0_hat = (x - sqrt_one_minus_ab * eps) / sqrt_alpha_bar
+
+            # DDPM step from t -> t' using that ε  (simplified Eq. 1.4)
+            x = torch.sqrt(alpha_bar_prev) * x0_hat + \
+                torch.sqrt(1.0 - alpha_bar_prev) * eps
+
+    return x.cpu().detach().numpy()
+
+
+# ---------- Visualization helper: upright vs flipped ----------
+def show_illusion_pair(img_np, title_upright, title_flipped):
+    """
+    img_np: numpy array from visual_anagrams, shape (1,3,64,64)
+    """
+    img_t = torch.from_numpy(img_np)            # (1,3,H,W)
+    img_upright = img_t
+    # display "flipped" as 180° rotation (same as during sampling)
+    img_flipped = torch.flip(img_t, dims=[2, 3])
+
+    plt.figure(figsize=(6, 3))
+    plt.subplot(1, 2, 1)
+    plt.imshow(to_display_img(img_upright), interpolation="bilinear")
+    plt.title(title_upright)
+    plt.axis("off")
+
+    plt.subplot(1, 2, 2)
+    plt.imshow(to_display_img(img_flipped), interpolation="bilinear")
+    plt.title(title_flipped)
+    plt.axis("off")
+
+    plt.tight_layout()
+    plt.show()
+
+
+# ==============================================================
+# 1) REQUIRED ILLUSION: campfire  <->  old man
+#    (campfire upright, old man when flipped)
+# ==============================================================
+
+# Use full prompts for the embeddings (matches assignment)
+p1 = "an oil painting of people around a campfire"  # upright view
+p2 = "an oil painting of an old man"                # flipped view
+
+p1_emb = prompt_embeds_dict[p1].to(device).to(torch.float16)
+p2_emb = prompt_embeds_dict[p2].to(device).to(torch.float16)
+
+for trial in range(2):  # try a couple seeds; pick the nicest for your report
+    noise = torch.randn(1, 3, 64, 64, device=device, dtype=torch.float16)
+    illusion_1 = visual_anagrams(
+        image=noise,
+        i_start=5,               # start mixing after a few steps (try 0,5,10)
+        prompt_embeds=p1_emb,    # upright: campfire
+        flip_prompt_embeds=p2_emb,  # flipped: old man
+        timesteps=strided_timesteps,
+        weight_upright=0.85,      # bias toward upright prompt
+    )
+
+    show_illusion_pair(
+        illusion_1,
+        title_upright=f"Upright: campfire painting (trial {trial+1})",
+        title_flipped="Flipped: old man painting"
+    )
+
+
+# ==============================================================
+# 2) EXTRA ILLUSION: waterfalls  <->  skull
+# ==============================================================
+
+p3 = "a lithograph of waterfalls"
+p4 = "a lithograph of a skull"
+
+p3_emb = prompt_embeds_dict[p3].to(device).to(torch.float16)
+p4_emb = prompt_embeds_dict[p4].to(device).to(torch.float16)
+
+for trial in range(2):
+    noise = torch.randn(1, 3, 64, 64, device=device, dtype=torch.float16)
+    illusion_2 = visual_anagrams(
+        image=noise,
+        i_start=5,
+        prompt_embeds=p3_emb,       # upright: waterfalls
+        flip_prompt_embeds=p4_emb,  # flipped: skull
+        timesteps=strided_timesteps,
+        weight_upright=0.85,
+    )
+
+    show_illusion_pair(
+        illusion_2,
+        title_upright=f"Upright: waterfalls (trial {trial+1})",
+        title_flipped="Flipped: skull"
+    )
+
+
+# ==============================================================
+# 3) EXTRA ILLUSION: dog  <->  man
+# ==============================================================
+
+p5 = "a photo of a dog"
+p6 = "a photo of a man"
+
+p5_emb = prompt_embeds_dict[p5].to(device).to(torch.float16)
+p6_emb = prompt_embeds_dict[p6].to(device).to(torch.float16)
+
+for trial in range(2):
+    noise = torch.randn(1, 3, 64, 64, device=device, dtype=torch.float16)
+    illusion_3 = visual_anagrams(
+        image=noise,
+        i_start=5,
+        prompt_embeds=p5_emb,       # upright: dog
+        flip_prompt_embeds=p6_emb,  # flipped: man
+        timesteps=strided_timesteps,
+        weight_upright=0.85,
+    )
+
+    show_illusion_pair(
+        illusion_3,
+        title_upright=f"Upright: dog (trial {trial+1})",
+        title_flipped="Flipped: man"
+    )
+No description has been provided for this image
+No description has been provided for this image
+No description has been provided for this image
+No description has been provided for this image
+No description has been provided for this image
+No description has been provided for this image
+# ============================================
+# Optional: Upsample 64×64 illusions to 256×256
+# ============================================
+
+def upsample(image64, prompt_embeds):
+    """
+    Args:
+      image64        : torch tensor (1, 3, 64, 64) in [-1, 1]
+      prompt_embeds  : torch tensor (1, 77, 4096) for the upright prompt
+
+    Returns:
+      image256 : torch tensor (1, 3, 256, 256) in [-1, 1]
+    """
+    image256 = stage_2(
+        image=image64,
+        num_inference_steps=30,
+        prompt_embeds=prompt_embeds,
+        negative_prompt_embeds=prompt_embeds_dict[''],  # CFG negative prompt
+        output_type="pt",
+    ).images.cpu()   # (1,3,256,256), still in [-1,1]
+    return image256
+
+
+def show_illusion_pair_256(img256, title_upright, title_flipped):
+    """
+    img256: torch tensor (1,3,256,256) in [-1,1]
+    """
+    img_upright = img256
+    img_flipped = torch.flip(img256, dims=[2, 3])  # 180° rotation
+
+    plt.figure(figsize=(6, 3))
+    plt.subplot(1, 2, 1)
+    plt.imshow(to_display_img(img_upright), interpolation="bilinear")
+    plt.title(title_upright)
+    plt.axis("off")
+
+    plt.subplot(1, 2, 2)
+    plt.imshow(to_display_img(img_flipped), interpolation="bilinear")
+    plt.title(title_flipped)
+    plt.axis("off")
+
+    plt.tight_layout()
+    plt.show()
+# assume illusion_1 is the 64×64 numpy array from visual_anagrams
+illusion1_64_t = torch.from_numpy(illusion_1).to(device)  # (1,3,64,64), [-1,1]
+
+# upsample using the upright prompt embedding (campfire)
+illusion1_256 = upsample(illusion1_64_t, p1_emb)
+
+# visualize high-res upright vs flipped
+show_illusion_pair_256(
+    illusion1_256,
+    title_upright="Upright: campfire (256×256)",
+    title_flipped="Flipped: old man (256×256)"
+)
+  0%|          | 0/30 [00:00<?, ?it/s]
+No description has been provided for this image
+# waterfalls ↔ skull
+illusion2_64_t = torch.from_numpy(illusion_2).to(device)
+illusion2_256 = upsample(illusion2_64_t, p3_emb)
+show_illusion_pair_256(illusion2_256, "Upright: waterfalls (256×256)", "Flipped: skull (256×256)")
+
+# dog ↔ man
+illusion3_64_t = torch.from_numpy(illusion_3).to(device)
+illusion3_256 = upsample(illusion3_64_t, p5_emb)
+show_illusion_pair_256(illusion3_256, "Upright: dog (256×256)", "Flipped: man (256×256)")
+  0%|          | 0/30 [00:00<?, ?it/s]
+No description has been provided for this image
+  0%|          | 0/30 [00:00<?, ?it/s]
+No description has been provided for this image
+Additional information
+Using Your Own Text Prompts
+Throughout this problem set, we have provided a dict of prompt embeddings so that you don't have to load the entire T5 text encoder on to the GPU. As part of your deliverable, you will need to come up with your own images for each part, and your own text prompts in the later parts as well.
+
+To use your own text prompts, please use the following code to generate text embeddings. Be aware that downloading this model may take a few minutes, and be careful of GPU out-of-memory errors! If you'd like, you can pay for Colab Pro credits and use an A100 GPU which can load both the text model and diffusion model at once.
+
+# @title Loading T5 text encoder
+
+# Load the T5 text encoder (this may take a while)
+text_encoder = T5EncoderModel.from_pretrained(
+    "DeepFloyd/IF-I-L-v1.0",
+    subfolder="text_encoder",
+    load_in_8bit=True,
+    variant="8bit",
+)
+text_pipe = DiffusionPipeline.from_pretrained(
+    "DeepFloyd/IF-I-L-v1.0",
+    text_encoder=text_encoder,  # pass the previously instantiated text encoder
+    unet=None
+)
+# @title Making prompt embeds dict
+
+# Prompts to put into dictionary
+def get_prompt_embeds_dict():
+  prompts = [
+    'an oil painting of a snowy mountain village',
+    'a photo of the amalfi cost',
+    'a photo of a man',
+    'a photo of a hipster barista',
+    'a photo of a dog',
+    'an oil painting of people around a campfire',
+    'an oil painting of an old man',
+    'a lithograph of waterfalls',
+    'a lithograph of a skull',
+    'a man wearing a hat',
+    'a high quality photo',
+    "a rocket ship",
+    "a pencil"
+    '',   # For CFG
+  ]
+
+  # Get prompt embeddings using the T5 model
+  # each embedding is of shape [1, 77, 4096]
+  # 77 comes from the max sequence length that deepfloyd will take
+  # and 4096 comes from the embedding dimension of the text encoder
+  prompt_embeds = [text_pipe.encode_prompt(prompt) for prompt in prompts]
+  prompt_embeds, negative_prompt_embeds = zip(*prompt_embeds)
+  prompt_embeds_dict = dict(zip(prompts, prompt_embeds))
+
+  return prompt_embeds_dict
+prompt_embeds_dict = get_prompt_embeds_dict()
+
+# @title Exporting prompt embeds dict
+
+# Save prompt embeds to colab disk
+torch.save(prompt_embeds_dict, 'prompt_embeds_dict.pth')
+
+# Download prompt embeds
+from google.colab import files
+files.download('prompt_embeds_dict.pth')
+[Optional] Upsampling Images
+If you want to upsample your 
+64
+×
+64
+ images to 
+256
+×
+256
+, you can use the following code:
+
+def upsample(image64, prompt_embeds):
+  """
+  Args:
+    image64 : torch tensor of size (1, 3, 64, 64) representing the image
+    prompt_embeds : torch tensor of size (1, 77, 4096), prompt embedding
+
+  Returns:
+    image256 : torch tensor of size (1, 3, 256, 256), upsampled image
+  """
+
+  image256 = stage_2(
+      image=image64,
+      num_inference_steps=30,
+      prompt_embeds=prompt_embeds,
+      negative_prompt_embeds=prompt_embeds_dict[''],
+      output_type="pt",
+  ).images.cpu()
+
+  return image256
+
+hybrid_256 = upsample(torch.tensor(clean),
+                      prompt_embeds[:1])
+media.show_images(
+    {
+        'hybrid': hybrid_256[0].permute(1,2,0) / 2. + 0.5,
+    }
+)
