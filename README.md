@@ -12,7 +12,7 @@ that embed two different semantic meanings into a single generated image.
 
 ## Live Project Report
 Full results with images and analysis:
-**https://sadhanageddam27.github.io/project4/**
+** https://sadhanageddam27.github.io/diffusion-models-ddpm-cfg-sdedit//**
 
 ---
 
